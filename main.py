@@ -166,3 +166,28 @@ def games_by_date(date: str):
             "date": date,
             "message": "NBA API request failed"
         }
+    
+@app.get("/games/today-raw")
+def today_games_raw():
+    """Direct request bez nba_api wrapper-a"""
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        url = "https://stats.nba.com/stats/scoreboardv2"
+        params = {
+            "DayOffset": "0",
+            "GameDate": today,
+            "LeagueID": "00"
+        }
+        
+        response = requests.get(
+            url,
+            params=params,
+            headers=NBA_HEADERS,
+            proxies=PROXIES,
+            timeout=30
+        )
+        
+        return response.json()
+    except Exception as e:
+        return {"error": str(e)}
