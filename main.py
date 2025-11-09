@@ -2,7 +2,9 @@ from fastapi import FastAPI, HTTPException
 from nba_api.stats.endpoints import scoreboardv2, playergamelog, commonplayerinfo
 from nba_api.stats.static import players, teams
 from datetime import datetime
-
+from nba_api.stats.library.http import NBAStatsHTTP
+import time
+NBAStatsHTTP.timeout = 30
 app = FastAPI(title="NBA API")
 
 @app.get("/")
@@ -36,14 +38,36 @@ def player_gamelog(player_id: int, season: str = "2024-25"):
 
 @app.get("/games/today")
 def today_games():
-    today = datetime.now().strftime("%Y-%m-%d")
-    board = scoreboardv2.ScoreboardV2(game_date=today)
-    return board.get_normalized_dict()
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        time.sleep(0.5)  # Pauza da ne spam-ujemo NBA API
+        board = scoreboardv2.ScoreboardV2(
+            game_date=today,
+            timeout=30
+        )
+        return board.get_normalized_dict()
+    except Exception as e:
+        return {
+            "error": str(e),
+            "date": today,
+            "message": "NBA API request failed"
+        }
 
 @app.get("/games/date/{date}")
 def games_by_date(date: str):
-    board = scoreboardv2.ScoreboardV2(game_date=date)
-    return board.get_normalized_dict()
+    try:
+        time.sleep(0.5)
+        board = scoreboardv2.ScoreboardV2(
+            game_date=date,
+            timeout=30
+        )
+        return board.get_normalized_dict()
+    except Exception as e:
+        return {
+            "error": str(e),
+            "date": date,
+            "message": "NBA API request failed"
+        }
 
 @app.get("/teams")
 def all_teams():
