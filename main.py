@@ -4,10 +4,10 @@ from nba_api.stats.static import players, teams
 from datetime import datetime, timedelta
 import time
 import os
+import requests
 
 app = FastAPI(title="NBA API with Proxy")
 
-# Custom headers
 NBA_HEADERS = {
     'Host': 'stats.nba.com',
     'Connection': 'keep-alive',
@@ -19,10 +19,18 @@ NBA_HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9',
 }
 
-# Proxy config - čita iz environment variables
-PROXY_URL = os.getenv("PROXY_URL", None)  # Format: http://username:password@proxy.com:port
+# Proxy setup
+PROXY_URL = os.getenv("PROXY_URL", None)
+PROXIES = None
 
-# Simple cache
+if PROXY_URL:
+    # Format za requests library
+    PROXIES = {
+        'http': PROXY_URL,
+        'https': PROXY_URL
+    }
+
+# Cache
 cache_store = {}
 
 def get_cache(key: str, ttl_minutes: int = 5):
@@ -41,16 +49,7 @@ def root():
         "status": "online", 
         "service": "NBA API",
         "proxy_enabled": PROXY_URL is not None,
-        "cache_enabled": True,
-        "endpoints": {
-            "health": "/health",
-            "teams": "/teams",
-            "search": "/players/search?name=LeBron",
-            "player_info": "/player/{id}/info",
-            "player_gamelog": "/player/{id}/gamelog?season=2024-25",
-            "today": "/games/today",
-            "by_date": "/games/date/2024-11-08"
-        }
+        "proxy_format": "configured" if PROXIES else "not configured"
     }
 
 @app.get("/health")
@@ -61,53 +60,38 @@ def health():
         "cache_entries": len(cache_store)
     }
 
+@app.get("/test-proxy")
+def test_proxy():
+    """Test da li proxy radi"""
+    if not PROXY_URL:
+        return {"error": "Proxy not configured"}
+    
+    try:
+        response = requests.get(
+            "https://httpbin.org/ip",
+            proxies=PROXIES,
+            timeout=10
+        )
+        return {
+            "proxy_works": True,
+            "your_ip": response.json(),
+            "message": "Proxy is working!"
+        }
+    except Exception as e:
+        return {
+            "proxy_works": False,
+            "error": str(e),
+            "message": "Proxy connection failed"
+        }
+
 @app.get("/players/search")
 def search_players(name: str):
     results = players.find_players_by_full_name(name)
     return results if results else []
 
-@app.get("/player/{player_id}/info")
-def player_info(player_id: int):
-    cache_key = f"player_info_{player_id}"
-    cached = get_cache(cache_key, ttl_minutes=60)
-    if cached:
-        return {"cached": True, "data": cached}
-    
-    try:
-        time.sleep(0.6)
-        info = commonplayerinfo.CommonPlayerInfo(
-            player_id=player_id, 
-            headers=NBA_HEADERS,
-            proxy=PROXY_URL,  # DODAJ PROXY!
-            timeout=100
-        )
-        data = info.get_normalized_dict()
-        set_cache(cache_key, data)
-        return {"cached": False, "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/player/{player_id}/gamelog")
-def player_gamelog(player_id: int, season: str = "2024-25"):
-    cache_key = f"gamelog_{player_id}_{season}"
-    cached = get_cache(cache_key, ttl_minutes=60)
-    if cached:
-        return {"cached": True, "data": cached}
-    
-    try:
-        time.sleep(0.6)
-        log = playergamelog.PlayerGameLog(
-            player_id=player_id, 
-            season=season,
-            headers=NBA_HEADERS,
-            proxy=PROXY_URL,  # DODAJ PROXY!
-            timeout=100
-        )
-        data = log.get_normalized_dict()
-        set_cache(cache_key, data)
-        return {"cached": False, "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.get("/teams")
+def all_teams():
+    return teams.get_teams()
 
 @app.get("/games/today")
 def today_games():
@@ -120,10 +104,31 @@ def today_games():
         today = datetime.now().strftime("%Y-%m-%d")
         time.sleep(0.6)
         
+        # Pokušaj bez proxy parametra, nego postavimo SESSION sa proxy-jem
+        import nba_api.stats.library.http as nba_http
+        
+        # Monkey patch session
+        if PROXIES:
+            original_send = nba_http.NBAStatsHTTP._send_api_request
+            
+            def patched_send(self, endpoint, parameters, referer=None, headers=None, timeout=None):
+                session = requests.Session()
+                session.proxies.update(PROXIES)
+                # Sad koristi session sa proxy-jem
+                url = f"https://stats.nba.com/stats/{endpoint}"
+                response = session.get(
+                    url, 
+                    params=parameters,
+                    headers=headers or NBA_HEADERS,
+                    timeout=timeout or 100
+                )
+                return response
+            
+            nba_http.NBAStatsHTTP._send_api_request = patched_send
+        
         board = scoreboardv2.ScoreboardV2(
             game_date=today,
             headers=NBA_HEADERS,
-            proxy=PROXY_URL,  # DODAJ PROXY!
             timeout=100
         )
         data = board.get_normalized_dict()
@@ -133,7 +138,8 @@ def today_games():
         return {
             "error": str(e),
             "date": today,
-            "message": "NBA API request failed"
+            "message": "NBA API request failed",
+            "tip": "Try /test-proxy to check if proxy is working"
         }
 
 @app.get("/games/date/{date}")
@@ -148,7 +154,7 @@ def games_by_date(date: str):
         board = scoreboardv2.ScoreboardV2(
             game_date=date,
             headers=NBA_HEADERS,
-            proxy=PROXY_URL,  # DODAJ PROXY!
+            proxy=PROXY_URL,
             timeout=100
         )
         data = board.get_normalized_dict()
@@ -160,12 +166,3 @@ def games_by_date(date: str):
             "date": date,
             "message": "NBA API request failed"
         }
-
-@app.get("/teams")
-def all_teams():
-    return teams.get_teams()
-
-@app.get("/cache/clear")
-def clear_cache():
-    cache_store.clear()
-    return {"message": "Cache cleared"}
